@@ -13,11 +13,91 @@
 #include "salt.h"
 #include "salt_io.h"
 
+#include "salti_util.h"
+
+
 static void *connection_handler(void *context);
 static void *write_handler(void *context);
 
+#define CERT_HWID_BYTES 8
+#define CERT_COMMENT_BYTES 32
+
+typedef struct certificate_s {
+    unsigned char pk[crypto_sign_PUBLICKEYBYTES];
+    char hwid[CERT_HWID_BYTES];
+    char comment[CERT_COMMENT_BYTES];
+    uint32_t creation_timestamp;
+    uint32_t expire_timestamp;
+} certificate_t;
+
+#define CERT_TEST_COMMENT "This is a certificate comment!"
+#define CERT_TEST_HWID "12345678"
+
+
+void test_sign()
+{
+    unsigned char pk_shipping[crypto_sign_PUBLICKEYBYTES];
+    unsigned char sk_shipping[crypto_sign_SECRETKEYBYTES];
+
+    unsigned char pk_wearable[crypto_sign_PUBLICKEYBYTES];
+    unsigned char sk_wearable[crypto_sign_SECRETKEYBYTES];
+
+    certificate_t cert;
+    unsigned char cert_signed[1024];
+    unsigned long long cert_signed_len;
+
+
+    printf("\n=== STEP 1: Generate keypair for shipping center (\"Root CA keypair\") - Only done once ===\n\n");
+    crypto_sign_keypair(pk_shipping, sk_shipping);
+    printf("--- Shipping center signing public key (To be installed on door panels) ---\n");
+    SALT_HEXDUMP_DEBUG(pk_shipping, (int)sizeof(pk_shipping));
+    printf("--- Shipping center signing secret key (To be used for signing in shipping center) ---\n");
+    SALT_HEXDUMP_DEBUG(sk_shipping, (int)sizeof(sk_shipping));
+
+
+    printf("\n=== STEP 2: Generate keypair for wearable (Done once for every wearable) ===\n\n");
+    crypto_sign_keypair(pk_wearable, sk_wearable);
+    SALT_HEXDUMP_DEBUG(pk_wearable, (int)sizeof(pk_wearable));
+    SALT_HEXDUMP_DEBUG(sk_wearable, (int)sizeof(sk_wearable));
+
+
+    printf("\n=== STEP 3: Create & sign certificate to be put on wearable (One for every wearable) ===\n\n");
+    memset(&cert, 0, sizeof(cert));
+    memcpy(&cert.hwid, CERT_TEST_HWID, sizeof(CERT_TEST_HWID));
+    memcpy(&cert.comment, CERT_TEST_COMMENT, sizeof(CERT_TEST_COMMENT));
+    cert.creation_timestamp = time(NULL);
+    cert.expire_timestamp = cert.creation_timestamp + (365 * 24 * 3600);
+    memcpy(cert.pk, pk_wearable, sizeof(cert.pk));
+    printf("Cert: [Hwid: %*.*s] [Comment: %*.*s] (%d bytes)\n", 0, (int)sizeof(cert.hwid), cert.hwid,
+           0, (int)sizeof(cert.comment), cert.comment, (int)sizeof(cert));
+
+
+    memset(cert_signed, 0, sizeof(cert_signed));
+    crypto_sign(cert_signed, &cert_signed_len, (void*)&cert, sizeof(cert), sk_shipping);
+    printf("--- Signed certificate (To be stored on wearables) ---\n");
+    SALT_HEXDUMP_DEBUG(cert_signed, (int)cert_signed_len);
+
+
+    printf("\n=== STEP 4: Validate signed wearable certificate (On connection to doorpanel)\n\n");
+    unsigned char cert_unpacked_bytes[256];
+    unsigned long long cert_unpacked_len;
+    certificate_t cert_unpacked;
+
+    memset(cert_unpacked_bytes, 0, sizeof(cert_unpacked_bytes));
+    memset(&cert_unpacked, 0, sizeof(cert_unpacked));
+
+    crypto_sign_open(cert_unpacked_bytes, &cert_unpacked_len, cert_signed, cert_signed_len, pk_shipping);
+    assert(cert_unpacked_len == sizeof(cert_unpacked));
+    memcpy(&cert_unpacked, cert_unpacked_bytes, sizeof(cert_unpacked));
+    printf("--- Successfully verified this wearable public key (HWID=%*.*s):\n", 0, (int)sizeof(cert.hwid), cert.hwid);
+    SALT_HEXDUMP_DEBUG(cert.pk, (int)sizeof(cert_unpacked.pk));
+
+    exit(1);
+}
+
 int main(int argc, char **argv)
 {
+    test_sign();
     //test();
     int sock_desc;
     struct sockaddr_in serv_addr;
